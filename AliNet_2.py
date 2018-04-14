@@ -133,21 +133,22 @@ class Net:
     # 网络结构
     def net_example(self, input_op):
         filter_number = 128
-        weight_1 = tf.Variable(tf.truncated_normal(shape=[9, 9, self.class_number + 1, filter_number], stddev=5e-2))
+        kernel_size = 5
+        weight_1 = tf.Variable(tf.truncated_normal(shape=[kernel_size, kernel_size, self.class_number + 1, filter_number], stddev=5e-2))
         kernel_1 = tf.nn.conv2d(input_op, weight_1, [1, 1, 1, 1], padding="SAME")
         bias_1 = tf.Variable(tf.constant(0.0, shape=[filter_number]))
         conv_1 = tf.nn.relu(tf.nn.bias_add(kernel_1, bias_1))
         pool_1 = tf.nn.max_pool(conv_1, ksize=[1, 2, 2, 1], strides=[1, 4, 4, 1], padding="SAME")
         norm_1 = tf.nn.lrn(pool_1, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75)
 
-        weight_2 = tf.Variable(tf.truncated_normal(shape=[9, 9, filter_number, filter_number * 2], stddev=5e-2))
+        weight_2 = tf.Variable(tf.truncated_normal(shape=[kernel_size, kernel_size, filter_number, filter_number * 2], stddev=5e-2))
         kernel_2 = tf.nn.conv2d(norm_1, weight_2, [1, 1, 1, 1], padding="SAME")
         bias_2 = tf.Variable(tf.constant(0.1, shape=[filter_number * 2]))
         conv_2 = tf.nn.relu(tf.nn.bias_add(kernel_2, bias_2))
         norm_2 = tf.nn.lrn(conv_2, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75)
         pool_2 = tf.nn.max_pool(norm_2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding="SAME")
 
-        weight_23 = tf.Variable(tf.truncated_normal(shape=[9, 9, filter_number * 2, filter_number * 4], stddev=5e-2))
+        weight_23 = tf.Variable(tf.truncated_normal(shape=[kernel_size, kernel_size, filter_number * 2, filter_number * 4], stddev=5e-2))
         kernel_23 = tf.nn.conv2d(pool_2, weight_23, [1, 1, 1, 1], padding="SAME")
         bias_23 = tf.Variable(tf.constant(0.1, shape=[filter_number * 4]))
         conv_23 = tf.nn.relu(tf.nn.bias_add(kernel_23, bias_23))
@@ -202,7 +203,7 @@ class Runner:
         pass
 
     # 训练
-    def train(self, epochs=6, test_freq=1, save_freq=2, weight_dir="result/wight"):
+    def train(self, epochs=50, test_freq=1, save_freq=2, weight_dir="result/weight"):
         with self.supervisor.managed_session(config=self.config) as sess:
             for epoch in range(epochs):
                 # stop
@@ -220,7 +221,7 @@ class Runner:
                 loss_all = loss_all / self.data.number_train
                 Tools.print_info("epoch={} loss={}".format(epoch, loss_all))
                 # weight
-                self._weight(sess, epoch, Tools.new_dir(weight_dir))
+                # self._weight(sess, epoch, Tools.new_dir(weight_dir))
                 # test
                 if epoch % test_freq == 0:
                     self._test(sess, epoch)
@@ -270,7 +271,7 @@ class Runner:
         return test_acc
 
     # 推理：准备几个基线
-    def inference(self, result_path="result", inference_len=100, is_save_image=True):
+    def inference(self, result_path="result", inference_len=5000, is_save_image=True):
         Tools.new_dir(result_path)
         # 获取基准图片
         base_data = self.data.get_base_class(train_data=True)
@@ -289,6 +290,7 @@ class Runner:
             judge_data, judge_label = self.data.get_batch_data(train_data=False, image_number=inference_len)
 
             prediction_result = []
+            is_ok = [False] * len(judge_label)
 
             for index, now_data in enumerate(judge_data):
                 if index % 100 == 0:
@@ -306,38 +308,45 @@ class Runner:
 
                 # 保存结果
                 now_data = np.array(np.squeeze(now_data) * 255, dtype=np.uint8)
-                if is_save_image:
-                    Image.fromarray(now_data).convert("L").save(
-                        os.path.join(save_path, "{}_{}_{}.bmp".format(judge_label[index], prediction[0], index)))
-                    Tools.print_info("{} label={} prediction={} prediction_sort={}".format(
-                        index, judge_label[index],prediction[0], list(prediction_sort[1][0])))
+                if prediction_sort[0][0][0] > 0.9:
+                    is_ok[index] = True
+                    if is_save_image:
+                        Image.fromarray(now_data).convert("L").save(
+                            os.path.join(save_path, "{}_{}_{}.bmp".format(judge_label[index], prediction[0], index)))
+                        Tools.print_info("{} label={} prediction={} sort={} p={}".format(
+                            index, judge_label[index], prediction[0], list(prediction_sort[1][0]), list(prediction_sort[0][0])))
+                        pass
                     pass
 
                 pass
 
             # 打印结果
-            self._print_result(judge_label, prediction_result, self.data.class_number)
+            self._print_result(judge_label, prediction_result, self.data.class_number, is_ok)
 
             pass
 
         pass
 
     @staticmethod
-    def _print_result(judge_label, prediction_result, class_number):
+    def _print_result(judge_label, prediction_result, class_number, is_ok=None):
         judge_label = list(judge_label)
         Tools.print_info(judge_label)
         Tools.print_info(prediction_result)
-        acc = np.zeros(shape=[class_number, 2], dtype=np.int)
+        acc = np.zeros(shape=[class_number, 3], dtype=np.int)
         for index in range(len(judge_label)):
+            if is_ok is not None and not is_ok[index]:
+                continue
             acc[judge_label[index]][1] += 1
+            acc[prediction_result[index]][2] += 1
             if judge_label[index] == prediction_result[index]:
                 acc[judge_label[index]][0] += 1
             pass
-        acc_all = np.sum(np.squeeze(np.split(acc, 2, 1))[0])
-        Tools.print_info("all acc={}({}/{})".format(acc_all * 1.0 / len(judge_label), acc_all, len(judge_label)))
+        acc_all = np.sum(np.squeeze(np.split(acc, 3, 1))[0])
+        count = np.sum(is_ok) if is_ok is not None else len(judge_label)
+        Tools.print_info("all acc={}({}/{})".format(acc_all * 1.0 / count, acc_all, count))
         for index in range(len(acc)):
-            Tools.print_info("{} acc={}({}/{})".format(index, acc[index][0] * 1.0 / acc[index][1],
-                                                       acc[index][0], acc[index][1]))
+            Tools.print_info("{} acc={}({}/{}/{})".format(index, acc[index][0] * 1.0 / acc[index][1],
+                                                          acc[index][0], acc[index][1], acc[index][2]))
             pass
         pass
 
@@ -357,7 +366,7 @@ if __name__ == '__main__':
 
     runner = Runner(Data(batch_size=args.batch_size, class_number=args.class_number, data_path=args.data_path),
                     model_path=os.path.join("model", args.name))
-    runner.train(weight_dir=os.path.join("result", args.name, "weight"))
+    # runner.train(weight_dir=os.path.join("result", args.name, "weight"))
     runner.test()
     runner.inference(result_path=os.path.join("result", args.name))
 
