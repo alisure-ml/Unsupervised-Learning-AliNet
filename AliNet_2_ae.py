@@ -153,24 +153,27 @@ class Net:
 
     @staticmethod
     def net_ae(x_ae, n_input, n_hidden):
+        n_hidden_2 = n_hidden * 1
         weights = dict()
-        weights["w1"] = tf.get_variable("w1", shape=[n_input, n_hidden * 4], initializer=tf.contrib.layers.xavier_initializer())
-        weights["b1"] = tf.Variable(tf.zeros([n_hidden * 4], dtype=tf.float32))
+        weights["w1"] = tf.get_variable("w1", shape=[n_input, n_hidden_2], initializer=tf.contrib.layers.xavier_initializer())
+        weights["b1"] = tf.Variable(tf.zeros([n_hidden_2], dtype=tf.float32))
 
-        weights["w2"] = tf.get_variable("w2", shape=[n_hidden * 4, n_hidden], initializer=tf.contrib.layers.xavier_initializer())
-        weights["b2"] = tf.Variable(tf.zeros([n_hidden], dtype=tf.float32))
+        # weights["w2"] = tf.get_variable("w2", shape=[n_hidden_2, n_hidden], initializer=tf.contrib.layers.xavier_initializer())
+        # weights["b2"] = tf.Variable(tf.zeros([n_hidden], dtype=tf.float32))
 
-        weights["w3"] = tf.Variable(tf.zeros([n_hidden, n_hidden * 4], dtype=tf.float32))
-        weights["b3"] = tf.Variable(tf.zeros([n_hidden * 4], dtype=tf.float32))
+        # weights["w3"] = tf.Variable(tf.zeros([n_hidden, n_hidden_2], dtype=tf.float32))
+        # weights["b3"] = tf.Variable(tf.zeros([n_hidden_2], dtype=tf.float32))
 
-        weights["w4"] = tf.Variable(tf.zeros([n_hidden * 4, n_input], dtype=tf.float32))
+        weights["w4"] = tf.Variable(tf.zeros([n_hidden_2, n_input], dtype=tf.float32))
         weights["b4"] = tf.Variable(tf.zeros([n_input], dtype=tf.float32))
 
         # model
         hidden1 = tf.nn.softplus(tf.add(tf.matmul(x_ae, weights["w1"]), weights["b1"]))
-        hidden2 = tf.nn.softplus(tf.add(tf.matmul(hidden1, weights["w2"]), weights["b2"]))
+        # hidden2 = tf.nn.softplus(tf.add(tf.matmul(hidden1, weights["w2"]), weights["b2"]))
+        hidden2 = hidden1
 
-        reconstruction1 = tf.nn.softplus(tf.add(tf.matmul(hidden2, weights["w3"]), weights["b3"]))
+        # reconstruction1 = tf.nn.softplus(tf.add(tf.matmul(hidden2, weights["w3"]), weights["b3"]))
+        reconstruction1 = hidden2
         reconstruction2 = tf.add(tf.matmul(reconstruction1, weights["w4"]), weights["b4"])
         return hidden2, reconstruction2
 
@@ -220,7 +223,7 @@ class Net:
     # 损失
     def loss_example(self):
         # cost
-        loss_1 = 0.5 * tf.reduce_mean(tf.pow(tf.subtract(self.reconstruction_ae, self.x_ae), 2.0))
+        loss_1 = 5 * 0.5 * tf.reduce_mean(tf.pow(tf.subtract(self.reconstruction_ae, self.x_ae), 2.0))
         loss_2 = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_cnn,
                                                                                logits=self.logits_cnn))
         return tf.add(loss_1, loss_2), loss_1, loss_2
@@ -431,7 +434,7 @@ class Runner:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-name", type=str, default="ae_just", help="name")
-    parser.add_argument("-batch_size", type=int, default=10, help="batch size")
+    parser.add_argument("-batch_size", type=int, default=5, help="batch size")
     parser.add_argument("-class_number", type=int, default=10, help="type number")
     parser.add_argument("-data_path", type=str, default="./data/mnist", help="image data")
     args = parser.parse_args()
@@ -441,7 +444,7 @@ if __name__ == '__main__':
 
     runner = Runner(Data(batch_size=args.batch_size, class_number=args.class_number, data_path=args.data_path),
                     model_path=os.path.join("model", args.name))
-    runner.train(epochs=20)
+    runner.train(epochs=50)
     runner.test()
     runner.inference(result_path=os.path.join("result", args.name))
 
