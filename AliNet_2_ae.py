@@ -2,6 +2,8 @@ import os
 import time
 import argparse
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from PIL import Image
 import tensorflow as tf
 from tensorflow.examples.tutorials.mnist import input_data
@@ -95,6 +97,11 @@ class Data:
             return images, labels
         return images[0: image_number], labels[0: image_number]
 
+    def get_image_for_reconstruct(self):
+        image = self._data_test.images[0: 10]
+        image = np.reshape(image, newshape=[10, -1])
+        return image
+
     pass
 
 
@@ -117,21 +124,26 @@ class Net:
         self.loss, self.loss_1, self.loss_2, self.train_op = None, None, None, None
 
         with self.graph.as_default():
+            # 输入，每个10通道：n * 28 * 28 * 10
             self.x = tf.placeholder(dtype=tf.float32, shape=[None, self.data_size,
                                                              self.data_size, self.class_number], name="x")
-
-            self.x_ae = tf.reshape(self.x, shape=[-1, self.data_size, self.data_size])
+            self.x_ae = tf.split(self.x, num_or_size_splits=self.class_number, axis=3)
+            self.x_ae = tf.squeeze(tf.concat(self.x_ae, axis=0))
+            # 变成1通道: 10n * 784
             self.x_ae = tf.reshape(self.x_ae, shape=[-1, self.data_size * self.data_size])
-            self.hidden_ae, self.reconstruction_ae = self.net_ae(self.data_size * self.data_size, 80)
-
-            self.x_cnn = tf.reshape(self.x_ae, shape=[-1, self.data_size, self.data_size, self.class_number])
-            self.x_cnn = tf.split(self.x_cnn, self.class_number, axis=3)
+            self.hidden_ae, self.reconstruction_ae = self.net_ae(self.x_ae, self.data_size * self.data_size, 80)
+            # AE结果: 10n * 28 * 28 * 1
+            self.reconstruction_ae_reshape = tf.reshape(self.reconstruction_ae, [-1, self.data_size, self.data_size, 1])
 
             self.x_cnn_all = []
-            for i in range(len(self.x_cnn)):
-                self.x_cnn_all.append(tf.concat([self.x, self.x_cnn[i]], axis=3))
+            for i in range(self.class_number):
+                self.x_cnn_all.append(self.x)
+            # 输入，每个10通道：10n * 28 * 28 * 10
+            self.x_cnn_all = tf.concat(self.x_cnn_all, axis=0)
+
+            # 结合.每个11通道：10n * 28 * 28 * 11
+            self.x_cnn = tf.concat([self.x_cnn_all, self.reconstruction_ae_reshape], axis=3)
             self.label_cnn = tf.placeholder(dtype=tf.int32, shape=[None], name="label")
-            self.x_cnn = tf.concat(self.x_cnn_all, axis=0)
 
             self.logits_cnn, self.softmax_cnn, self.prediction_cnn, self.prediction_sort_cnn = self.net_cnn(self.x_cnn)
 
@@ -139,17 +151,28 @@ class Net:
             self.train_op = self.train_op_example(learning_rate=0.001, loss_all=self.loss)
         pass
 
-    def net_ae(self, n_input, n_hidden):
+    @staticmethod
+    def net_ae(x_ae, n_input, n_hidden):
         weights = dict()
-        weights["w1"] = tf.get_variable("w1", shape=[n_input, n_hidden], initializer=tf.contrib.layers.xavier_initializer())
-        weights["b1"] = tf.Variable(tf.zeros([n_hidden], dtype=tf.float32))
-        weights["w2"] = tf.Variable(tf.zeros([n_hidden, n_input], dtype=tf.float32))
-        weights["b2"] = tf.Variable(tf.zeros([n_input], dtype=tf.float32))
+        weights["w1"] = tf.get_variable("w1", shape=[n_input, n_hidden * 4], initializer=tf.contrib.layers.xavier_initializer())
+        weights["b1"] = tf.Variable(tf.zeros([n_hidden * 4], dtype=tf.float32))
+
+        weights["w2"] = tf.get_variable("w2", shape=[n_hidden * 4, n_hidden], initializer=tf.contrib.layers.xavier_initializer())
+        weights["b2"] = tf.Variable(tf.zeros([n_hidden], dtype=tf.float32))
+
+        weights["w3"] = tf.Variable(tf.zeros([n_hidden, n_hidden * 4], dtype=tf.float32))
+        weights["b3"] = tf.Variable(tf.zeros([n_hidden * 4], dtype=tf.float32))
+
+        weights["w4"] = tf.Variable(tf.zeros([n_hidden * 4, n_input], dtype=tf.float32))
+        weights["b4"] = tf.Variable(tf.zeros([n_input], dtype=tf.float32))
 
         # model
-        hidden = tf.nn.softplus(tf.add(tf.matmul(self.x_ae, weights["w1"]), weights["b1"]))
-        reconstruction = tf.add(tf.matmul(hidden, weights["w2"]), weights["b2"])
-        return hidden, reconstruction
+        hidden1 = tf.nn.softplus(tf.add(tf.matmul(x_ae, weights["w1"]), weights["b1"]))
+        hidden2 = tf.nn.softplus(tf.add(tf.matmul(hidden1, weights["w2"]), weights["b2"]))
+
+        reconstruction1 = tf.nn.softplus(tf.add(tf.matmul(hidden2, weights["w3"]), weights["b3"]))
+        reconstruction2 = tf.add(tf.matmul(reconstruction1, weights["w4"]), weights["b4"])
+        return hidden2, reconstruction2
 
     # 网络结构
     def net_cnn(self, input_op):
@@ -197,10 +220,11 @@ class Net:
     # 损失
     def loss_example(self):
         # cost
-        loss_1 = 50 * 0.5 * tf.reduce_mean(tf.pow(tf.subtract(self.reconstruction_ae, self.x_ae), 2.0))
+        loss_1 = 0.5 * tf.reduce_mean(tf.pow(tf.subtract(self.reconstruction_ae, self.x_ae), 2.0))
         loss_2 = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_cnn,
                                                                                logits=self.logits_cnn))
         return tf.add(loss_1, loss_2), loss_1, loss_2
+        # return loss_1, loss_1, loss_2
 
     # 训练节点
     @staticmethod
@@ -226,7 +250,7 @@ class Runner:
         pass
 
     # 训练
-    def train(self, epochs=50, test_freq=1, save_freq=2):
+    def train(self, epochs=20, test_freq=1, save_freq=2):
         with self.supervisor.managed_session(config=self.config) as sess:
             for epoch in range(epochs):
                 # stop
@@ -236,13 +260,14 @@ class Runner:
                 loss_all, loss_1_all, loss_2_all = 0, 0, 0
                 for step in range(self.data.number_train):
                     x = self.data.next_train_batch()
-                    label = np.reshape([[i] * len(x) for i in range(10)], newshape=[-1])
+                    label = np.reshape([[i] * len(x) for i in range(self.class_number)], newshape=[-1])
 
                     _, loss, loss_1, loss_2 = sess.run([self.net.train_op, self.net.loss,
                                                         self.net.loss_1, self.net.loss_2],
                                                        feed_dict={self.net.x: x, self.net.label_cnn: label})
-                    Tools.print_info("epoch={} step={} loss={} loss1={} loss2={}".format(epoch, step,
-                                                                                        loss, loss_1, loss_2))
+                    if step % 100 == 0:
+                        Tools.print_info("epoch={} step={} loss={} loss1={} loss2={}".format(epoch, step,
+                                                                                             loss, loss_1, loss_2))
                     loss_all += np.mean(loss)
                     loss_1_all += np.mean(loss_1)
                     loss_2_all += np.mean(loss_2)
@@ -258,6 +283,8 @@ class Runner:
                 if epoch % save_freq == 0:
                     self.supervisor.saver.save(sess, os.path.join(self.model_path, "model_epoch_{}".format(epoch)))
             pass
+            self.show_cnn_input(sess)
+            self.show_reconstruction(sess)
         pass
 
     # 测试
@@ -270,15 +297,15 @@ class Runner:
         test_acc = 0
         for i in range(self.data.number_test):
             x = self.data.next_test_batch(i)
-            label = np.reshape([i * len(x) for i in range(10)], newshape=[-1])
+            label = np.reshape([[i] * len(x) for i in range(10)], newshape=[-1])
             prediction = sess.run(self.net.prediction_cnn, {self.net.x: x})
             test_acc += np.sum(np.equal(label, prediction))
-        test_acc = test_acc / (self.batch_size * self.data.number_test)
+        test_acc = test_acc / (self.batch_size * self.data.number_test * 10)
         Tools.print_info("{} acc={}".format(info, test_acc))
         return test_acc
 
     # 推理：准备几个基线
-    def inference(self, result_path="result", inference_len=5000, is_save_image=True):
+    def inference(self, result_path="result", inference_len=5000, is_save_image=False):
         Tools.new_dir(result_path)
         # 获取基准图片
         base_data = self.data.get_base_class(train_data=True)
@@ -315,7 +342,7 @@ class Runner:
 
                 # 保存结果
                 now_data = np.array(np.squeeze(now_data) * 255, dtype=np.uint8)
-                if prediction_sort[0][0][0] > 0.9:
+                if prediction_sort[0][0][0] > 0.:
                     is_ok[index] = True
                     if is_save_image:
                         Image.fromarray(now_data).convert("L").save(
@@ -357,12 +384,53 @@ class Runner:
             pass
         pass
 
+    def show_reconstruction(self, sess):
+        image_data = self.data.get_image_for_reconstruct()
+        reconstruction_ae = sess.run(self.net.reconstruction_ae, {self.net.x_ae: image_data})
+
+        self.show_image(len(image_data), image_data, reconstruction_ae)
+        pass
+
+    def show_cnn_input(self, sess):
+        image_data = self.data.next_train_batch()
+        x_cnn = sess.run(self.net.x_cnn, {self.net.x: image_data})
+
+        len_data = image_data[3].shape[-1] + 1
+        x_cnn = np.split(x_cnn[13], indices_or_sections=len_data, axis=2)
+        self.show_image(len_data, x_cnn, x_cnn)
+        pass
+
+    def show_image(self, image_length, image_data, image_data2):
+        # 对比原始图片重建图片
+        plt.figure(figsize=(image_length, 2))
+        gs = gridspec.GridSpec(2, image_length)
+        gs.update(wspace=0.05, hspace=0.05)
+        for i in range(image_length):
+            # 原始图片
+            ax = plt.subplot(gs[i])
+            plt.axis('off')
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_aspect('equal')
+            plt.imshow(np.reshape(image_data[i], (28, 28)))
+
+            # 解码后的图
+            ax = plt.subplot(gs[i + image_length])
+            plt.axis('off')
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_aspect('equal')
+            plt.imshow(np.reshape(image_data2[i], (28, 28)))
+            pass
+        plt.show()
+        pass
+
     pass
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("-name", type=str, default="ae", help="name")
+    parser.add_argument("-name", type=str, default="ae_just", help="name")
     parser.add_argument("-batch_size", type=int, default=10, help="batch size")
     parser.add_argument("-class_number", type=int, default=10, help="type number")
     parser.add_argument("-data_path", type=str, default="./data/mnist", help="image data")
@@ -373,7 +441,7 @@ if __name__ == '__main__':
 
     runner = Runner(Data(batch_size=args.batch_size, class_number=args.class_number, data_path=args.data_path),
                     model_path=os.path.join("model", args.name))
-    runner.train()
+    runner.train(epochs=20)
     runner.test()
     runner.inference(result_path=os.path.join("result", args.name))
 
